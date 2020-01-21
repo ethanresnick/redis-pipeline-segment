@@ -1,0 +1,7 @@
+{
+  "extends": ["@ethanresnick/tslint-config"],
+  "rules": {
+    "member-ordering": false,
+    "no-implicit-dependencies": [true, "dev"]
+  }
+}

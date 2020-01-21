@@ -1,0 +1,60 @@
+{
+  "name": "pipeline-segment",
+  "description": "Composable pieces of a (redis) pipeline.",
+  "version": "0.0.1",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "test": "nodenv -E .env --exec \"npm run test:ci\"",
+    "test:ci": "ts-mocha -p ./tsconfig.json test/setup.ts test/{unit,integration}/**/*.ts --check-leaks",
+    "format": "prettier --write --parser typescript  \"./**/*.{ts,tsx}\"",
+    "format:check": "prettier --check --parser typescript  \"./**/*.{ts,tsx}\"",
+    "lint": "tslint -c tslint.json -p tsconfig.json --format verbose",
+    "check-all": "FORCE_COLOR=1 NPM_CONFIG_COLOR=always run-p --aggregate-output lint format:check test",
+    "build": "tsc --version && tsc --pretty",
+    "build:watch": "npm run build -- --watch",
+    "prepublishOnly": "npm run check-all && npm run build"
+  },
+  "author": "Ethan Resnick <ethan.resnick@gmail.com>",
+  "license": "ISC",
+  "engines": {
+    "node": "12.x",
+    "npm": "6.x"
+  },
+  "files": [
+    "dist/"
+  ],
+  "lint-staged": {
+    "*.{ts}": [
+      "prettier --write",
+      "git add"
+    ]
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged",
+      "pre-push": "npm run check-all"
+    }
+  },
+  "dependencies": {
+    "@types/ioredis": "^4.14.4",
+    "@types/node": "^12.0.0",
+    "ioredis": "^4.14.1"
+  },
+  "devDependencies": {
+    "@ethanresnick/node-env-run": "^3.0.3",
+    "@ethanresnick/tslint-config": "^5.10.0",
+    "@types/chai": "^4.2.7",
+    "@types/mocha": "^5.2.5",
+    "chai": "^4.2.0",
+    "fast-check": "^1.21.0",
+    "husky": "^3.1.0",
+    "lint-staged": "^9.5.0",
+    "mocha": "^5.2.0",
+    "nodemon": "^1.19.4",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^1.19.1",
+    "ts-mocha": "^2.0.0",
+    "tslint": "^5.20.1",
+    "typescript": "^3.7.5"
+  }
+}
