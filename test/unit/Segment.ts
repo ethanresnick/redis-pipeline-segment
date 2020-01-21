@@ -81,7 +81,7 @@ const segmentAndResults = fc.oneof<
 >(combinedAndResultsArb, leafAndResultsArb);
 // tslint:enable mocha-no-side-effect-code
 
-describe("Segment", () => {
+describe("Segment unit tests", () => {
   describe("as a monoid", () => {
     describe("empty (aka mempty)", () => {
       it("should be an identity element from POV of apply's result", () => {
