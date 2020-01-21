@@ -1,7 +1,7 @@
 {
   "name": "pipeline-segment",
   "description": "Composable pieces of a (redis) pipeline.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "dist/src/index.js",
   "scripts": {
     "test": "nodenv -E .env --exec \"npm run test:ci\"",
