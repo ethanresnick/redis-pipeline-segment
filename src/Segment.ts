@@ -13,6 +13,7 @@ export abstract class Segment<
 > {
   public abstract readonly commands: Command[];
   public abstract apply: (cmdResults: Args) => Result;
+
   public static empty: SegmentEmpty;
 
   // TODO: if needed for perf, consider specializing this when an arg is a
@@ -22,7 +23,7 @@ export abstract class Segment<
   public append<T extends any[], U extends RedisResult[]>(
     segment: Segment<T, U>
   ): Segment<UnionElems<Result, T>, UnionElems<Args, U>> {
-    return new CombinedSegment([
+    return new CombinedSegment<UnionElems<Result, T>>([
       (this as unknown) as Segment<Result, UnionElems<Args, U>>,
       (segment as unknown) as Segment<T, UnionElems<Args, U>>
     ]);
@@ -57,7 +58,7 @@ export class CombinedSegment<
   A extends RedisResult[] = RedisResult[]
 > extends Segment<R, A> {
   public static empty: SegmentEmpty = new CombinedSegment([]);
-  constructor(private readonly segments: Segment<unknown[]>[]) {
+  constructor(private readonly segments: Segment<R, A>[]) {
     super();
   }
 
@@ -69,7 +70,10 @@ export class CombinedSegment<
     );
   }
 
-  public apply = <T extends A>(cmdResults: T): R => {
+  // The type-safe type here is A, but we let the user indicate that their
+  // apply function takes a subtype of A because each Segment's `apply` is
+  // only called with a subset of the Command results, which TS can't track.
+  public apply = (cmdResults: A): R => {
     const segmentLengths = this.segments.map(it => it.commands.length);
     const segmentedCmdResults = segmentList(cmdResults, segmentLengths);
 
@@ -78,7 +82,8 @@ export class CombinedSegment<
     // segments, whose return types we weren't tracking, is the return type
     // that the user said this CombinedSegment should have (i.e., A).
     return segmentedCmdResults.flatMap((results, i) =>
-      this.segments[i].apply(results)
+      // https://github.com/microsoft/TypeScript/issues/36337
+      this.segments[i].apply(results as A)
     ) as R;
   };
 }
@@ -88,6 +93,13 @@ export class LeafSegment<
   A extends RedisResult[] = RedisResult[]
 > extends Segment<R, A> {
   public static readonly empty: SegmentEmpty = CombinedSegment.empty;
+  public static of<R extends any[], A extends RedisResult[]>(
+    commands: Command[],
+    apply: (results: A) => R
+  ) {
+    return new LeafSegment(commands, apply);
+  }
+
   constructor(
     public readonly commands: Command[],
     public apply: (results: A) => R
