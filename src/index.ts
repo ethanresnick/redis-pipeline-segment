@@ -7,3 +7,4 @@ declare module "ioredis" {
 }
 
 export default LeafSegment;
+export { default as StringCmd } from "./StringCmd";
