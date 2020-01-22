@@ -24,8 +24,13 @@ export abstract class Segment<Result, Arg extends RedisResult = RedisResult> {
     ]);
   }
 
-  public static concat<R, A extends RedisResult>(segments: Segment<R, A>[]) {
-    return segments.reduce((acc, it) => acc.append(it), CombinedSegment.empty);
+  public static concat<R, A extends RedisResult>(
+    segments: Segment<R, A>[]
+  ): Segment<R, A> {
+    return segments.reduce(
+      (acc, it) => acc.append(it),
+      (CombinedSegment.empty as unknown) as Segment<R, A>
+    );
   }
 
   public map<B>(f: (res: Result[]) => B[]): Segment<B, Arg> {
