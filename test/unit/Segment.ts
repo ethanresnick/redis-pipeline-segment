@@ -64,7 +64,7 @@ const { combinedAndResultsArb: combinedAndResultsArb } = fc.letrec(tie => ({
         leafAndResultsArb,
         leafAndResultsArb,
         tie("combinedAndResultsArb") as Arbitrary<
-          [CombinedSegment<unknown[]>, any[]]
+          [CombinedSegment<unknown>, RedisResult[]]
         >
       ),
       5
@@ -76,9 +76,10 @@ const { combinedAndResultsArb: combinedAndResultsArb } = fc.letrec(tie => ({
     })
 }));
 
-const segmentAndResults = fc.oneof<
-  readonly [Segment<unknown[]>, RedisResult[]]
->(combinedAndResultsArb, leafAndResultsArb);
+const segmentAndResults = fc.oneof<readonly [Segment<unknown>, RedisResult[]]>(
+  combinedAndResultsArb,
+  leafAndResultsArb
+);
 // tslint:enable mocha-no-side-effect-code
 
 describe("Segment unit tests", () => {
