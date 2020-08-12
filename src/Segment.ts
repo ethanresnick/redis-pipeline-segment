@@ -28,7 +28,7 @@ function transformRoot<T extends any[], U extends any[]>(
   return isRootHandler(handler)
     ? f(handler)
     : {
-        ...handler,
+        parent: handler.parent,
         continue: (parentRes) => transformRoot(handler.continue(parentRes), f),
       };
 }
@@ -111,7 +111,7 @@ export class Segment<Results extends any[]> {
   public static concat<R>(segments: Segment<R[]>[]) {
     return segments.reduce(
       (acc, it) => acc.append(it),
-      Segment.empty as Segment<R[]>,
+      Segment.empty,
     );
   }
 
@@ -153,7 +153,7 @@ export class Segment<Results extends any[]> {
       return handler.apply(await cmdResultsPromise);
     }
 
-    const parentRes: any = await handler.parent.run(runner);
+    const parentRes = await handler.parent.run(runner);
     return this.runHandler(runner, handler.continue(parentRes));
   }
 
