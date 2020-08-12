@@ -1,105 +1,169 @@
-import { ValueType, Command, Redis } from "ioredis";
-import { segment as segmentList, tryPipeline } from "./utils";
+import { Redis, type Pipeline } from "ioredis";
+import type { Command, CommandReturn } from "./TypedCmd.js";
+import { tryPipeline } from "./utils.js";
 
-export type RedisResult = ValueType | null;
-type SegmentEmpty = Segment<unknown>;
+export type RedisResult = unknown;
+export type Runner = (cmds: readonly Command<any>[]) => Promise<RedisResult[]>;
 
-// tslint:disable: max-classes-per-file
-export abstract class Segment<Result, Arg extends RedisResult = RedisResult> {
-  public abstract readonly commands: Command[];
-  public abstract apply: (cmdResults: Arg[]) => Result[];
+type RootHandler<T extends any[]> = {
+  commands: readonly Command[];
+  apply: (cmdResults: any) => T;
+};
 
-  public static empty: SegmentEmpty;
+type ChildHandler<T extends any[]> = {
+  parent: Segment<any[]>;
+  continue(parentResults: any): Handler<T>;
+};
 
-  // TODO: if needed for perf, consider specializing this when an arg is a
-  // CombinedSegment to extract its `segments` and spread them into a new
-  // CombinedSegment, rather than having the new Segment hold a reference to
-  // the original: `new CombinedSegment([...this.segments, ...other.segments])`
-  public append<T, U extends RedisResult>(
-    segment: Segment<T, U>
-  ): Segment<Result | T, Arg | U> {
-    return new CombinedSegment([
-      (this as unknown) as Segment<Result | T, Arg | U>,
-      (segment as unknown) as Segment<Result | T, Arg | U>
-    ]);
+type Handler<T extends any[]> = RootHandler<T> | ChildHandler<T>;
+
+const isRootHandler = <T extends any[]>(it: Handler<T>): it is RootHandler<T> =>
+  "commands" in it;
+
+// tslint:disable-next-line: completed-docs
+function transformRoot<T extends any[], U extends any[]>(
+  handler: Handler<T>,
+  f: (res: RootHandler<T>) => Handler<U>,
+): Handler<U> {
+  return isRootHandler(handler)
+    ? f(handler)
+    : {
+        ...handler,
+        continue: (parentRes) => transformRoot(handler.continue(parentRes), f),
+      };
+}
+
+const mergeRootHandlers = <T extends any[], U extends any[]>(
+  a: RootHandler<T>,
+  b: RootHandler<U>,
+): RootHandler<[...T, ...U]> => ({
+  commands: [...a.commands, ...b.commands],
+  apply: (cmdResults) => [
+    ...a.apply(cmdResults.slice(0, a.commands.length)),
+    ...b.apply(cmdResults.slice(a.commands.length)),
+  ],
+});
+
+export class Segment<Results extends any[]> {
+  public static readonly empty: Segment<never[]> = Segment.from([], () => []);
+  private constructor(private readonly handler: Handler<Results>) {}
+
+  public static from<
+    // https://github.com/microsoft/TypeScript/issues/27179#issuecomment-422606990
+    R extends any[] | [],
+    C extends readonly Command[] | [],
+    A extends {
+      [P in keyof C]: C[P] extends Command<infer Name>
+        ? CommandReturn<Name>
+        : C[P];
+    },
+  >(commands: C, apply: (results: A) => R) {
+    return new Segment({ commands, apply });
   }
 
-  public static concat<R, A extends RedisResult>(
-    segments: Segment<R, A>[]
-  ): Segment<R, A> {
+  public append<T extends any[] | []>(segment: Segment<T>) {
+    const thisHandler = this.handler;
+    const segmentHandler = segment.handler;
+
+    if (isRootHandler(thisHandler)) {
+      if (isRootHandler(segmentHandler)) {
+        return new Segment(mergeRootHandlers(thisHandler, segmentHandler));
+      }
+
+      return new Segment({
+        parent: segmentHandler.parent,
+        continue: (parentResults) =>
+          transformRoot(segmentHandler.continue(parentResults), (it) =>
+            mergeRootHandlers(thisHandler, it),
+          ),
+      });
+    }
+
+    if (isRootHandler(segmentHandler)) {
+      return new Segment({
+        parent: thisHandler.parent,
+        continue: (parentResults) =>
+          transformRoot(thisHandler.continue(parentResults), (it) =>
+            mergeRootHandlers(it, segmentHandler),
+          ),
+      });
+    }
+
+    // Two Segments with dependendies.
+    return new Segment({
+      parent: thisHandler.parent,
+      continue: (thisParentRes) => ({
+        parent: segmentHandler.parent,
+        continue: (segmentParentRes: any) =>
+          transformRoot(
+            thisHandler.continue(thisParentRes),
+            (thisRootHandler) =>
+              transformRoot(
+                segmentHandler.continue(segmentParentRes),
+                (segRootHandler) =>
+                  mergeRootHandlers(thisRootHandler, segRootHandler),
+              ),
+          ),
+      }),
+    });
+  }
+
+  public static concat<R>(segments: Segment<R[]>[]) {
     return segments.reduce(
       (acc, it) => acc.append(it),
-      (CombinedSegment.empty as unknown) as Segment<R, A>
+      Segment.empty as Segment<R[]>,
     );
   }
 
-  public map<B>(f: (res: Result[]) => B[]): Segment<B, Arg> {
-    const origApply = this.apply.bind(this);
-    const mappedClone: Segment<B, Arg> = <any>(
-      this.append(CombinedSegment.empty)
+  public map<B extends any[] | []>(f: (res: Results) => B) {
+    return new Segment(
+      transformRoot(this.handler, (it) => ({
+        ...it,
+        apply: (res) => f(it.apply(res)),
+      })),
     );
-    mappedClone.apply = (results: Arg[]) => f(origApply(results));
-    return mappedClone;
   }
 
-  public async run(redis: Redis) {
-    const redisPipeline = redis.pipeline();
-    this.commands.forEach(it => {
+  public continue<B extends any[] | []>(
+    continuation: (res: Results) => Segment<B>,
+  ) {
+    return new Segment({
+      parent: this,
+      continue(thisRes: Results) {
+        const newSeg = continuation(thisRes);
+        return newSeg.handler;
+      },
+    });
+  }
+
+  public async run(runner: Redis | Runner) {
+    return this.runHandler(runner, this.handler);
+  }
+
+  private async runHandler(
+    runner: Redis | Runner,
+    handler: Handler<Results>,
+  ): Promise<Results> {
+    if (isRootHandler(handler)) {
+      const cmdResultsPromise =
+        runner instanceof Redis
+          ? Segment.runner(runner, handler.commands)
+          : runner(handler.commands);
+
+      return handler.apply(await cmdResultsPromise);
+    }
+
+    const parentRes: any = await handler.parent.run(runner);
+    return this.runHandler(runner, handler.continue(parentRes));
+  }
+
+  private static async runner(redis: Redis, cmds: readonly Command[]) {
+    if (!cmds.length) return [];
+
+    const redisPipeline = redis.pipeline() as Pipeline;
+    cmds.forEach((it) => {
       redisPipeline.sendCommand(it);
     });
-    return this.apply(await tryPipeline<Arg[]>(redisPipeline));
-  }
-}
-
-export class CombinedSegment<
-  R,
-  A extends RedisResult = RedisResult
-> extends Segment<R, A> {
-  public static empty: SegmentEmpty = new CombinedSegment([]);
-  constructor(private readonly segments: Segment<R, A>[]) {
-    super();
-  }
-
-  private _commands?: Command[];
-  public get commands(): Command[] {
-    return (
-      this._commands ||
-      (this._commands = this.segments.flatMap(it => it.commands))
-    );
-  }
-
-  public apply = (cmdResults: A[]): R[] => {
-    const segmentLengths = this.segments.map(it => it.commands.length);
-    const segmentedCmdResults = segmentList(cmdResults, segmentLengths);
-
-    return segmentedCmdResults.flatMap((results, i) =>
-      this.segments[i].apply(results)
-    );
-  };
-}
-
-export class LeafSegment<
-  R,
-  A extends RedisResult = RedisResult
-> extends Segment<R, A> {
-  public static readonly empty: SegmentEmpty = CombinedSegment.empty;
-  public static of<R, A extends RedisResult>(
-    commands: Command[],
-    apply: (results: A[]) => R[]
-  ) {
-    return new LeafSegment(commands, apply);
-  }
-
-  constructor(
-    public readonly commands: Command[],
-    public apply: (results: A[]) => R[]
-  ) {
-    super();
-  }
-
-  public map<B>(f: (res: R[]) => B[]): Segment<B, A> {
-    return new LeafSegment(this.commands, (results: A[]) =>
-      f(this.apply(results))
-    );
+    return tryPipeline(redisPipeline);
   }
 }

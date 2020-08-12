@@ -1,9 +1,9 @@
-import { Pipeline as IORedisPipeline, ValueType } from "ioredis";
+import { Pipeline as IORedisPipeline } from "ioredis";
 
 // Simpler version of lodash's unzip, just for pairs
 export const unzip2 = <T, U>(data: [T, U][]): [T[], U[]] => [
-  data.map(it => it[0]),
-  data.map(it => it[1])
+  data.map((it) => it[0]),
+  data.map((it) => it[1]),
 ];
 
 export const segment = <T>(arr: T[], lengths: number[]) =>
@@ -12,7 +12,7 @@ export const segment = <T>(arr: T[], lengths: number[]) =>
       acc[0].push(acc[1].splice(0, toTake));
       return acc;
     },
-    [[], arr.slice()] as [T[][], T[]]
+    [[], arr.slice()] as [T[][], T[]],
   )[0];
 
 /**
@@ -20,10 +20,10 @@ export const segment = <T>(arr: T[], lengths: number[]) =>
  * if any of the redis commands errored, and otherwise resolves with an array
  * of command results.
  */
-export async function tryPipeline<T extends (ValueType | null)[]>(
-  pipeline: IORedisPipeline
+export async function tryPipeline<T extends unknown[]>(
+  pipeline: IORedisPipeline,
 ) {
-  const pipelineResponse = await pipeline.exec();
+  const pipelineResponse = (await pipeline.exec()) ?? [];
   const [errorsOrNulls, results] = unzip2(pipelineResponse);
   const errors = errorsOrNulls.filter(isErorr);
 

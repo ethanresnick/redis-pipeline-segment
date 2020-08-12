@@ -1,14 +1,10 @@
 import fc = require("fast-check");
 import { Arbitrary } from "fast-check";
-import { expect } from "chai";
-import { Command } from "ioredis";
-import {
-  LeafSegment,
-  CombinedSegment,
-  Segment,
-  RedisResult
-} from "../../src/Segment";
+import chai from "chai";
+import { Command } from "../../src/TypedCmd.js";
+import { Segment, RedisResult } from "../../src/Segment.js";
 
+const { expect } = chai;
 // Disable below because I promise that creating these abitraries doesn't throw.
 // tslint:disable mocha-no-side-effect-code
 
@@ -19,7 +15,7 @@ import {
 // among the leafs.
 const leafSegmentApply = fc
   .func(fc.array(fc.anything({ maxDepth: 2 })))
-  .map(applyFn => {
+  .map((applyFn) => {
     let lastCallArgs: string;
     return (...args: any[]) => {
       const argsString = JSON.stringify(args);
@@ -41,102 +37,92 @@ const leafSegmentApply = fc
 // For perf, our fake commands don't follow the structure of real Commands,
 // but they don't need to, since they shouldn't be inspected by this code. We
 // give them _some_ data just in case we want to identify a command in a test.
-const commandArb = (fc.record({ id: fc.string() }) as any) as Arbitrary<
-  Command
->;
+const commandArb = fc.record({ id: fc.string() }) as any as Arbitrary<Command>;
 const commandResultArb = fc.anything({ maxDepth: 1 }) as Arbitrary<RedisResult>;
 
 const leafAndResultsArb = fc
   .tuple(fc.array(fc.tuple(commandArb, commandResultArb), 3), leafSegmentApply)
   .map(([commandsAndResults, fn]) => {
-    const commands = commandsAndResults.map(it => it[0]);
-    const results = commandsAndResults.map(it => it[1]);
-    return <const>[
-      new LeafSegment((commands as unknown) as Command[], fn),
-      results
-    ];
+    const commands = commandsAndResults.map((it) => it[0]);
+    const results = commandsAndResults.map((it) => it[1]);
+    return <const>[Segment.from(commands, fn), results];
   });
 
-const { combinedAndResultsArb: combinedAndResultsArb } = fc.letrec(tie => ({
+const { combinedAndResultsArb: combinedAndResultsArb } = fc.letrec((tie) => ({
   combinedAndResultsArb: fc
     .array(
       fc.oneof(
         leafAndResultsArb,
         leafAndResultsArb,
         tie("combinedAndResultsArb") as Arbitrary<
-          [CombinedSegment<unknown>, RedisResult[]]
-        >
+          [Segment<unknown[]>, RedisResult[]]
+        >,
       ),
-      5
+      5,
     )
-    .map(generated => {
-      const segments = generated.map(it => it[0]);
-      const results = generated.flatMap(it => it[1]);
-      return <const>[new CombinedSegment(segments), results];
-    })
+    .map((generated) => {
+      const segments = generated.map((it) => it[0]);
+      const results = generated.flatMap((it) => it[1]);
+      return <const>[Segment.concat(segments), results];
+    }),
 }));
 
-const segmentAndResults = fc.oneof<readonly [Segment<unknown>, RedisResult[]]>(
-  combinedAndResultsArb,
-  leafAndResultsArb
-);
+const segmentAndResults = fc.oneof(combinedAndResultsArb, leafAndResultsArb);
 // tslint:enable mocha-no-side-effect-code
 
 describe("Segment unit tests", () => {
   describe("as a monoid", () => {
     describe("empty (aka mempty)", () => {
-      it("should be an identity element from POV of apply's result", () => {
+      it("should be an identity element from POV of apply's result", async () =>
         fc.assert(
-          fc.property(segmentAndResults, ([segment, results]) => {
-            const res = segment.apply(results);
-            const leftMappendRes = LeafSegment.empty
-              .append(segment)
-              .apply(results);
-            const rightMappendRes = segment
-              .append(LeafSegment.empty)
-              .apply(results);
-            expect(res).to.deep.eq(leftMappendRes);
-            expect(leftMappendRes).to.deep.eq(rightMappendRes);
-          })
-        );
-      });
+          fc.asyncProperty(segmentAndResults, async ([segment, results]) => {
+            const runner = async () => results;
+            const res = await segment.run(runner);
+            const leftAppend = await Segment.empty.append(segment).run(runner);
+            const rightAppend = await segment.append(Segment.empty).run(runner);
+            expect(res).to.deep.eq(leftAppend);
+            expect(leftAppend).to.deep.eq(rightAppend);
+          }),
+        ));
     });
 
     describe("append (aka mappend)", () => {
-      it("should work by splitting cmd results and then appending apply results", () => {
+      it("should work by splitting cmd results and then appending apply results", async () =>
         fc.assert(
-          fc.property(
+          fc.asyncProperty(
             segmentAndResults,
             segmentAndResults,
-            ([seg1, results1], [seg2, results2]) => {
-              const seg1Applied = seg1.apply(results1);
-              const seg2Applied = seg2.apply(results2);
+            async ([seg1, results1], [seg2, results2]) => {
+              const seg1Applied = await seg1.run(async () => results1);
+              const seg2Applied = await seg2.run(async () => results2);
 
-              const joinedResults = results1.concat(results2);
               const joinedSegment = seg1.append(seg2);
-              const joinedSegmentApplied = joinedSegment.apply(joinedResults);
+              const joinedSegmentApplied = await joinedSegment.run(
+                async (cmds) => {
+                  return results1.concat(results2);
+                },
+              );
 
               expect(joinedSegmentApplied).to.deep.eq(
-                seg1Applied.concat(seg2Applied)
+                seg1Applied.concat(seg2Applied),
               );
-            }
-          )
-        );
-      });
+            },
+          ),
+        ));
     });
   });
 
   describe("as a functor", () => {
-    it("should compose the results of apply when mapped", () => {
+    it("should compose the results of apply when mapped", async () =>
       fc.assert(
-        fc.property(segmentAndResults, ([segment, cmdResults]) => {
+        fc.asyncProperty(segmentAndResults, async ([segment, cmdResults]) => {
           const f = (...args: any[]) => ["applied f!", args];
+          const runner = async () => cmdResults;
 
-          const res = segment.apply(cmdResults);
-          const mappedRes = segment.map(f).apply(cmdResults);
+          const res = await segment.run(runner);
+          const mappedRes = await segment.map(f).run(runner);
           expect(mappedRes).to.deep.eq(f(res));
-        })
-      );
-    });
+        }),
+      ));
   });
 });
